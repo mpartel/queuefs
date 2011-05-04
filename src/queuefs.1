@@ -1,0 +1,74 @@
+.TH QUEUEFS 1
+
+
+.SH NAME
+queuefs
+
+
+.SH SYNOPSIS
+\fBqueuefs\fP [\fIoptions\fP]\fI dir mountpoint
+
+
+.SH DESCRIPTION
+TODO
+
+
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Displays a help message and exits.
+
+.TP
+.B \-V, \-\-version
+Displays version information and exits.
+
+
+.SH FUSE OPTIONS
+.TP
+.B \-o \fIoptions
+Fuse options.
+
+.TP
+.B \-r, \-o ro
+Make the mount strictly read-only.
+This even prevents root from writing to it.
+If this is all you need, then (since Linux 2.6.26) you can get a
+more efficent mount with \fBmount \-\-bind\fP and then \fBmount \-o remount,ro\fP.
+
+.TP
+.B \-d, \-o debug
+Enable debug output (implies \-f).
+
+.TP
+.B \-f
+Foreground operation.
+
+.TP
+.B \-s
+Disable multithreaded operation. queuefs should be thread-safe.
+
+
+.SH EXAMPLES
+.BR
+.TP
+.B queuefs ...
+
+TODO
+
+
+.SH NOTES
+
+TODO
+
+.SH BUGS
+
+TODO: where to report
+
+
+.SH AUTHOR
+Martin P\[:a]rtel <martin dot partel at gmail dot com>
+
+
+.SH SEE ALSO
+\fBfusermount\fP(1)
+

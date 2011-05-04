@@ -1,0 +1,33 @@
+# Autotools products
+Makefile.in
+/autom4te.cache
+/aclocal.m4
+/compile
+/configure
+/depcomp
+/install-sh
+/missing
+
+# ./configure products
+Makefile
+/config.*
+/ltmain.sh
+/libtool
+/stamp-h1
+
+/**/.deps/*
+
+# Compiler products
+*.lo
+*.o
+*.la
+*.a
+
+# Compiled binaries
+/src/queuefs
+
+# Eclipse CDT files
+/.project
+/.cproject
+/.settings
+
