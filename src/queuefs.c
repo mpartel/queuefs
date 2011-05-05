@@ -46,9 +46,8 @@
 #include <fuse.h>
 #include <fuse_opt.h>
 
-#include <glib.h>
-
 #include "debug.h"
+#include "jobqueue.h"
 #include "misc.h"
 
 /* SETTINGS */

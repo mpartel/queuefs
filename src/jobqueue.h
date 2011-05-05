@@ -17,19 +17,31 @@
     along with queuefs.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef INC_QUEUEFS_MISC_H
-#define INC_QUEUEFS_MISC_H
+#ifndef INC_QUEUEFS_JOBQUEUE_H
+#define INC_QUEUEFS_JOBQUEUE_H
 
-/* Returns a pointer to the first character after the
-   final slash of path, or path itself if it contains no slashes.
-   If the path ends with a slash, then the result is an empty
-   string.
-   Returns NULL if path is NULL. */
-const char *my_basename(const char *path);
+struct JobQueue;
+typedef struct JobQueue JobQueue;
 
 /*
- * Counts the number of char pointers before a null-pointer.
+ * cmd_template must be a NULL-terminated array where elements equal to "{}"
+ * will be replaced with the file name.
+ *
+ * It's not safe to call this from a process with multiple threads.
  */
-int strings_before_null(const char* const* p);
+JobQueue* jobqueue_create(const char** cmd_template, int max_workers);
 
-#endif
+/*
+ * Destroys a job queue and kills its manager process.
+ * Child processes get a SIGHUP.
+ */
+int jobqueue_destroy(JobQueue* jq); /* Returns status code */
+
+/*
+ * Adds a file to be processed in the background when a worker becomes available.
+ *
+ * This function is thread-safe.
+ */
+void jobqueue_add_file(JobQueue* jq, const char* path);
+
+#endif /* INC_QUEUEFS_JOBQUEUE_H */

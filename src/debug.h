@@ -25,8 +25,10 @@
 #if QUEUEFS_DEBUG
 #include <stdio.h>
 #define DPRINTF(fmt, ...) fprintf(stderr, "DEBUG: " fmt "\n", __VA_ARGS__)
+#define DPRINT(msg) DPRINTF("%s", (msg))
 #else
 #define DPRINTF(...)
+#define DPRINT(msg)
 #endif
 
 #endif

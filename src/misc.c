@@ -18,6 +18,7 @@
 */
 
 #include "misc.h"
+#include "debug.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -34,4 +35,14 @@ const char *my_basename(const char *path)
         return p + 1;
     else
         return path;
+}
+
+int strings_before_null(const char* const* p)
+{
+    int count = 0;
+    while (*p != NULL) {
+        p = p + 1;
+        ++count;
+    }
+    return count;
 }
