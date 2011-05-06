@@ -168,10 +168,6 @@ static int queuefs_fgetattr(const char *path,
 static int queuefs_readlink(const char *path, char *buf, size_t size) {
     path = process_path(path);
 
-    /* No need to check for access to the link itself, since symlink
-     permissions don't matter. Access to the path components of the symlink
-     are automatically queried by FUSE. */
-
     int res = readlink(path, buf, size - 1);
     if (res == -1)
         return -errno;
