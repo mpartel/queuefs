@@ -23,7 +23,9 @@
 #include "misc.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
+#include <assert.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -34,15 +36,22 @@ struct JobQueue {
     JobQueueSettings settings;
     pthread_mutex_t mutex;
     pid_t child_pid;
-    int child_stdin;
+    int child_input_fd;
+    int child_output_fd;
 };
+
+static void send_command(JobQueue* jq, const char* cmd, size_t len);
 
 
 JobQueue* jobqueue_create(const char** cmd_template, int max_workers) {
     JobQueue* jq = NULL;
 
-    int pipefd[2] = {-1, -1};
-    if (pipe(pipefd) == -1) {
+    int input_pipe[2] = {-1, -1};
+    int output_pipe[2] = {-1, -1};
+    if (pipe(input_pipe) == -1) {
+        goto error;
+    }
+    if (pipe(output_pipe) == -1) {
         goto error;
     }
 
@@ -53,7 +62,8 @@ JobQueue* jobqueue_create(const char** cmd_template, int max_workers) {
     jq->settings.cmd_template = cmd_template;
     jq->settings.max_workers = max_workers;
     pthread_mutex_init(&jq->mutex, NULL);
-    jq->child_stdin = pipefd[1];
+    jq->child_input_fd = input_pipe[1];
+    jq->child_output_fd = output_pipe[0];
 
     fflush(stdout);
     fflush(stderr);
@@ -61,8 +71,9 @@ JobQueue* jobqueue_create(const char** cmd_template, int max_workers) {
     pid_t pid = fork();
     if (pid == 0) {
         DPRINT("Job queue process forked");
-        close(pipefd[1]);
-        jobqueue_process_main(&jq->settings, pipefd[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        jobqueue_process_main(&jq->settings, input_pipe[0], output_pipe[1]);
         _exit(0);
     } else if (pid == -1) {
         DPRINTF("Failed to fork jobqueue: %d", errno);
@@ -74,8 +85,10 @@ JobQueue* jobqueue_create(const char** cmd_template, int max_workers) {
     return jq;
 
 error:
-    close(pipefd[0]);
-    close(pipefd[1]);
+    close(input_pipe[0]);
+    close(input_pipe[1]);
+    close(output_pipe[0]);
+    close(output_pipe[1]);
     if (jq) {
         pthread_mutex_destroy(&jq->mutex);
     }
@@ -83,8 +96,38 @@ error:
     return NULL;
 }
 
+void jobqueue_add_file(JobQueue* jq, const char* path) {
+    size_t len = strlen("EXEC ") + strlen(path) + 1;
+    char* cmd = alloca(len);
+    strcpy(cmd, "EXEC ");
+    strcpy(cmd + strlen("EXEC "), path);
+
+    pthread_mutex_lock(&jq->mutex);
+    send_command(jq, cmd, len);
+    pthread_mutex_unlock(&jq->mutex);
+
+    DPRINTF("Added to job queue: %s", path);
+}
+
+void jobqueue_flush(JobQueue* jq)
+{
+    pthread_mutex_lock(&jq->mutex);
+
+    send_command(jq, "FLUSH", strlen("FLUSH") + 1);
+
+    char buf;
+    int ret = read(jq->child_output_fd, &buf, 1);
+    if (ret == 0 || (ret == -1 && errno != EINTR)) {
+        DPRINT("Failed to read from jobqueue.");
+        abort();
+    }
+
+    pthread_mutex_unlock(&jq->mutex);
+}
+
 int jobqueue_destroy(JobQueue* jq) {
-    close(jq->child_stdin);
+    close(jq->child_input_fd);
+    close(jq->child_output_fd);
     DPRINT("Closed pipe to job queue");
 
     int status = 0;
@@ -109,24 +152,23 @@ int jobqueue_destroy(JobQueue* jq) {
     return ret;
 }
 
-void jobqueue_add_file(JobQueue* jq, const char* path) {
-    pthread_mutex_lock(&jq->mutex);
+static void send_command(JobQueue* jq, const char* cmd, size_t len) {
+    assert(pthread_mutex_trylock(&jq->mutex) == EBUSY);
 
-    size_t len = strlen(path) + 1;
     size_t amt_written = 0;
     while (amt_written < len) {
         size_t remaining = len - amt_written;
-        ssize_t ret = write(jq->child_stdin, &path[amt_written], remaining);
-        if (ret == -1) {
-            DPRINTF("Error writing to job queue: %d", errno);
-            break;
+        ssize_t ret = write(jq->child_input_fd, &cmd[amt_written], remaining);
+        if (ret > 0) {
+            amt_written += ret;
+        } else {
+            if (ret == -1) {
+                DPRINTF("Error writing to job queue: %d", errno);
+            } else {
+                DPRINTF("Job queue pipe closed: %d", errno);
+            }
+            abort();
         }
-        amt_written += ret;
     }
-    fsync(jq->child_stdin);
-
-    DPRINTF("Added to job queue: %s", path);
-
-    pthread_mutex_unlock(&jq->mutex);
+    fsync(jq->child_input_fd);
 }
-

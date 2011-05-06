@@ -23,6 +23,7 @@
 #include "misc.h"
 
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -31,45 +32,57 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
-#include <pthread.h>
 
 #include <glib.h>
 
 
+typedef struct WorkUnit {
+    char* path;
+    pid_t worker_pid;
+} WorkUnit;
+
 static const JobQueueSettings* settings;
 static int input_fd;
+static int output_fd;
 
 static int readbuf_capacity;
 static int readbuf_size;
 static char* readbuf;
 
+// The following may only be accessed while SIGCHLD is blocked
+// since it is also accessed in the SIGCHLD handler.
 static int active_workers;
 static GHashTable* active_work_units; // of pid to WorkUnit*
+static GQueue* work_queue;            // of WorkUnit*
 
+static sigset_t sigchld_set;
 
-typedef struct WorkUnit {
-    const char* path;
-    pid_t worker_pid;
-} WorkUnit;
+/*
+ * Calls wait_away_finished_workers() and start_queued_work().
+ */
+static void handle_sigchld(int signum);
+static void register_sigchld_handler();
 
-static GQueue* work_queue;
-
-
-static int read_and_enqueue_work_unit();
+static int process_input();
+static void handle_incoming_command(const char* buf);
 static int take_from_readbuf(GByteArray* buf); // returns 1 if encountered '\0'
 
+static void wait_for_all_workers_to_finish();
+
 static void wait_away_finished_workers();
-static _Bool wait_away_worker(_Bool nohang);
+static bool wait_away_worker(bool nohang);
 static void start_queued_work();
 static void start_worker(WorkUnit* unit);
 static gchar** make_command(const char *file_path);
 
+static void free_work_unit(gpointer unit);
 
 
-void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_) {
+void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int output_fd_) {
     settings = settings_;
 
     input_fd = input_fd_;
+    output_fd = output_fd_;
     readbuf_capacity = 4096;
     readbuf_size = 0;
     readbuf = alloca(readbuf_capacity);
@@ -78,32 +91,35 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_) {
     active_work_units = g_hash_table_new_full(&g_direct_hash,
                                               &g_direct_equal,
                                               NULL,
-                                              &g_free);
+                                              &free_work_unit);
 
     work_queue = g_queue_new();
 
+    sigemptyset(&sigchld_set);
+    sigaddset(&sigchld_set, SIGCHLD);
+
+    register_sigchld_handler();
+
     while (1) {
-        if (!read_and_enqueue_work_unit()) {
+        if (!process_input()) {
             break;
         }
-        wait_away_finished_workers();
 
-        _Bool workers_available = active_workers < settings->max_workers;
-        _Bool have_work = work_queue->length > 0;
-        if (have_work && !workers_available) {
-            //FIXME: this will cause the parent process to block!
-            DPRINT("No more worker slots - waiting for one to finish");
-            wait_away_worker(FALSE);
-        }
-        workers_available = active_workers < settings->max_workers;
-        assert(workers_available);
+        sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
 
-        if (have_work) {
-            start_queued_work();
+        if (work_queue->length > 0) {
+            if (active_workers < settings->max_workers) {
+                start_queued_work();
+            } else {
+                DPRINT("No more worker slots - work is left queued");
+            }
         }
+
+        sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
     }
 
-    // TODO: what to do with live children?
+    // Live children will be inherited by the init process
+    sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
 
     DPRINT("Job queue process cleaning up");
     g_queue_free(work_queue);
@@ -111,7 +127,20 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_) {
     close(input_fd);
 }
 
-static int read_and_enqueue_work_unit() {
+static void handle_sigchld(int signum) {
+    (void)signum;
+    wait_away_finished_workers();
+    start_queued_work();
+}
+
+static void register_sigchld_handler() {
+    struct sigaction sa;
+    sa.sa_handler = &handle_sigchld;
+    sa.sa_flags = SA_NOCLDSTOP | SA_RESTART;
+    sigaction(SIGCHLD, &sa, NULL);
+}
+
+static int process_input() {
     GByteArray* buf = g_byte_array_new();
 
     DPRINT("Reading work unit from FUSE process");
@@ -135,14 +164,32 @@ static int read_and_enqueue_work_unit() {
         }
     }
 
-    WorkUnit* unit = g_malloc(sizeof(WorkUnit));
-    DPRINTF("Received work unit: '%s'", (char*)buf->data);
-    unit->path = (char*)buf->data;
-    unit->worker_pid = -1;
-    g_byte_array_free(buf, FALSE);
+    handle_incoming_command((const char*)buf->data);
+    g_byte_array_free(buf, true);
 
-    g_queue_push_head(work_queue, unit);
     return 1;
+}
+
+static void handle_incoming_command(const char* buf) {
+    DPRINTF("Received command: '%s'", buf);
+
+    if (g_str_has_prefix(buf, "EXEC ")) {
+        WorkUnit* unit = g_malloc(sizeof(WorkUnit));
+        unit->path = g_strdup(buf + strlen("EXEC "));
+        unit->worker_pid = -1;
+        g_queue_push_head(work_queue, unit);
+    } else if (g_str_equal(buf, "FLUSH")) {
+        while (work_queue->length > 0 || active_workers > 0) {
+            wait_for_all_workers_to_finish();
+            // start_queued_work() is called by SIGCHLD handler automatically
+        }
+
+        while (true) {
+            if (write(output_fd, "1", 1) == 1) {
+                break;
+            }
+        }
+    }
 }
 
 static int take_from_readbuf(GByteArray* buf) {
@@ -157,37 +204,46 @@ static int take_from_readbuf(GByteArray* buf) {
         readbuf_size -= amount;
 
         if (found_separator) {
-            return TRUE;
+            return true;
         }
     }
-    return FALSE;
+    return false;
+}
+
+static void wait_for_all_workers_to_finish() {
+    sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
+    while (active_workers > 0) {
+        wait_away_worker(false);
+    }
+    sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
 }
 
 static void wait_away_finished_workers() {
     int ret;
     do {
-        ret = wait_away_worker(TRUE);
+        ret = wait_away_worker(true);
     } while (ret > 0);
 }
 
-static _Bool wait_away_worker(_Bool nohang) {
+static bool wait_away_worker(bool nohang) {
     int status;
 
-    _Bool ret = FALSE;
+    bool ret = false;
     pid_t pid = waitpid(-1, &status, nohang ? WNOHANG : 0);
     if (pid > 0) {
         g_hash_table_remove(active_work_units, GINT_TO_POINTER(pid));
         active_workers--;
-        ret = TRUE;
+        ret = true;
     }
 
     return ret;
 }
 
 static void start_queued_work() {
-    assert(work_queue->length > 0);
-    WorkUnit* unit = g_queue_pop_tail(work_queue);
-    start_worker(unit);
+    if (work_queue->length > 0) {
+        WorkUnit* unit = g_queue_pop_tail(work_queue);
+        start_worker(unit);
+    }
 }
 
 static void start_worker(WorkUnit* unit) {
@@ -197,6 +253,7 @@ static void start_worker(WorkUnit* unit) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
         execvp(cmd[0], (char* const*)cmd);
         _exit(1);
     }
@@ -210,6 +267,9 @@ static void start_worker(WorkUnit* unit) {
 }
 
 static gchar** make_command(const char *file_path) {
+    // TODO: change cmd_template to be a single string
+    // and always invoke /bin/sh -c cmd_template_with_quoted_path
+    char* quoted_path = g_shell_quote(file_path);
     const char* const* cmd_template = settings->cmd_template;
     const int num_parts = g_strv_length((gchar**)cmd_template);
     gchar** cmd = g_malloc_n(num_parts + 1, sizeof(gchar*));
@@ -218,13 +278,19 @@ static gchar** make_command(const char *file_path) {
     for (int i = 0; cmd_template[i] != NULL; ++i) {
         if (strstr(cmd_template[i], "{}")) {
             gchar** parts = g_strsplit(cmd_template[i], "{}", 0);
-            cmd[i] = g_strjoinv(file_path, parts);
+            cmd[i] = g_strjoinv(quoted_path, parts);
             g_strfreev(parts);
         } else {
             cmd[i] = g_strdup(cmd_template[i]);
         }
         DPRINTF("argv[%d] = \"%s\"", i, cmd[i]);
     }
+
+    g_free(quoted_path);
     return cmd;
 }
 
+static void free_work_unit(gpointer unit) {
+    g_free(((WorkUnit*)unit)->path);
+    g_free(unit);
+}

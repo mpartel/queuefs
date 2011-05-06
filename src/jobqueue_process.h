@@ -25,6 +25,6 @@ typedef struct JobQueueSettings {
     int max_workers;
 } JobQueueSettings;
 
-void jobqueue_process_main(JobQueueSettings* settings, int input_fd);
+void jobqueue_process_main(JobQueueSettings* settings, int input_fd, int output_fd);
 
 #endif /* INC_QUEUEFS_JOBQUEUE_PROCESS_H */

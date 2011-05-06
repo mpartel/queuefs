@@ -22,7 +22,7 @@
 
 #include <config.h>
 
-#if QUEUEFS_DEBUG
+#if QUEUEFS_DEBUG && !QUEUEFS_DISABLE_DEBUG
 #include <stdio.h>
 #define DPRINTF(fmt, ...) fprintf(stderr, "DEBUG: " fmt "\n", __VA_ARGS__)
 #define DPRINT(msg) DPRINTF("%s", (msg))

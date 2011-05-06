@@ -26,16 +26,8 @@ typedef struct JobQueue JobQueue;
 /*
  * cmd_template must be a NULL-terminated array where elements equal to "{}"
  * will be replaced with the file name.
- *
- * It's not safe to call this from a process with multiple threads.
  */
 JobQueue* jobqueue_create(const char** cmd_template, int max_workers);
-
-/*
- * Destroys a job queue and kills its manager process.
- * Child processes get a SIGHUP.
- */
-int jobqueue_destroy(JobQueue* jq); /* Returns status code */
 
 /*
  * Adds a file to be processed in the background when a worker becomes available.
@@ -43,5 +35,16 @@ int jobqueue_destroy(JobQueue* jq); /* Returns status code */
  * This function is thread-safe.
  */
 void jobqueue_add_file(JobQueue* jq, const char* path);
+
+/*
+ * Waits for the job queue to become empty.
+ */
+void jobqueue_flush(JobQueue* jq);
+
+/*
+ * Destroys a job queue and kills its manager process.
+ * Child processes get a SIGHUP.
+ */
+int jobqueue_destroy(JobQueue* jq); /* Returns status code */
 
 #endif /* INC_QUEUEFS_JOBQUEUE_H */
