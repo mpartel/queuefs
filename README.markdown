@@ -49,5 +49,4 @@ See the queuefs --help or the man-page for instructions and examples.
 
 ## License ##
 
-GNU General Public License version 2 or any later version.
-See the file COPYING.
+The MIT License. See the file LICENSE.

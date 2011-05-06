@@ -4,3 +4,6 @@ AUTOMAKE_OPTIONS = foreign
 
 SUBDIRS = src tests
 
+headache:
+	find src tests -name "*.c" -or -name "*.h" | xargs headache -h LICENSE -c headache.conf
+	echo "REMEMBER to update Ruby files by hand"
