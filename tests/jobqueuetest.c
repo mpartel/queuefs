@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include "misc.c"
 #include "jobqueue.c"
+#include "jobqueue_process.c"
 
 int main() {
     const char* cmd_template[] = {"/bin/sh", "-c", "echo {} && sleep 1", NULL};
