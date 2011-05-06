@@ -25,6 +25,7 @@ Makefile
 
 # Compiled binaries
 /src/queuefs
+/tests/jobqueuetest
 
 # Eclipse CDT files
 /.project
