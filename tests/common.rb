@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 #
-#   Copyright 2006,2007,2008,2009,2010 Martin Pärtel <martin.partel@gmail.com>
+#   Copyright 2911 Martin Pärtel <martin.partel@gmail.com>
 #
 #   This file is part of queuefs.
 #

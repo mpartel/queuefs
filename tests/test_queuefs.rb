@@ -18,8 +18,6 @@
 #   along with queuefs.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-# TODO: migrate to rspec
-
 require 'common.rb'
 
 include Errno

@@ -497,7 +497,7 @@ static struct fuse_operations queuefs_oper = {
     .statfs = queuefs_statfs,
     .release = queuefs_release,
     .fsync = queuefs_fsync,
-    .flag_nullpath_ok = 0
+    .flag_nullpath_ok = 0  // We use the path in release()
 };
 
 static void print_usage(const char *progname) {
@@ -515,7 +515,7 @@ static void print_usage(const char *progname) {
         "  -V      --version         Print version number and exit.\n"
         "\n"
         "Options:\n"
-        "  TODO\n"
+        "  (none yet)\n"
         "\n"
         "FUSE options:\n"
         "  -o opt[,opt,...]          Mount options.\n"
