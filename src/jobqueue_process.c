@@ -62,7 +62,7 @@ static void wait_away_finished_workers();
 static _Bool wait_away_worker(_Bool nohang);
 static void start_queued_work();
 static void start_worker(WorkUnit* unit);
-static void make_command(const char** cmd_buf, const char *absPath);
+static gchar** make_command(const char *file_path);
 
 
 
@@ -193,9 +193,7 @@ static void start_queued_work() {
 static void start_worker(WorkUnit* unit) {
     DPRINTF("Starting worker for '%s'", unit->path);
 
-    int cmd_len = 1 + strings_before_null(settings->cmd_template);
-    const char** cmd = alloca(cmd_len * sizeof(const char*));
-    make_command(cmd, unit->path);
+    gchar** cmd = make_command(unit->path);
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -203,24 +201,30 @@ static void start_worker(WorkUnit* unit) {
         _exit(1);
     }
 
+    g_strfreev(cmd);
+
     unit->worker_pid = pid;
 
     g_hash_table_insert(active_work_units, GINT_TO_POINTER(pid), unit);
     active_workers++;
 }
 
-static void make_command(const char** cmd_buf, const char *absPath) {
-    int i;
-    for (i = 0; settings->cmd_template[i] != NULL; ++i) {
-        const char *part = settings->cmd_template[i];
+static gchar** make_command(const char *file_path) {
+    const char* const* cmd_template = settings->cmd_template;
+    const int num_parts = g_strv_length((gchar**)cmd_template);
+    gchar** cmd = g_malloc_n(num_parts + 1, sizeof(gchar*));
+    cmd[num_parts] = NULL;
 
-        if (strcmp(part, "{}") == 0) {
-            cmd_buf[i] = absPath;
+    for (int i = 0; cmd_template[i] != NULL; ++i) {
+        if (strstr(cmd_template[i], "{}")) {
+            gchar** parts = g_strsplit(cmd_template[i], "{}", 0);
+            cmd[i] = g_strjoinv(file_path, parts);
+            g_strfreev(parts);
         } else {
-            cmd_buf[i] = part;
+            cmd[i] = g_strdup(cmd_template[i]);
         }
-        DPRINTF("argv[%d] = \"%s\"", i, cmd_buf[i]);
+        DPRINTF("argv[%d] = \"%s\"", i, cmd[i]);
     }
-    cmd_buf[i] = NULL;
+    return cmd;
 }
 

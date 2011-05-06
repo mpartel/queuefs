@@ -25,11 +25,6 @@
    If the path ends with a slash, then the result is an empty
    string.
    Returns NULL if path is NULL. */
-const char *my_basename(const char *path);
-
-/*
- * Counts the number of char pointers before a null-pointer.
- */
-int strings_before_null(const char* const* p);
+const char *my_basename(const char* path);
 
 #endif

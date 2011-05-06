@@ -23,9 +23,9 @@
 #include <string.h>
 #include <assert.h>
 
-const char *my_basename(const char *path)
+const char *my_basename(const char* path)
 {
-    const char *p;
+    const char* p;
 
     if (path == NULL)
         return NULL;
@@ -37,12 +37,3 @@ const char *my_basename(const char *path)
         return path;
 }
 
-int strings_before_null(const char* const* p)
-{
-    int count = 0;
-    while (*p != NULL) {
-        p = p + 1;
-        ++count;
-    }
-    return count;
-}
