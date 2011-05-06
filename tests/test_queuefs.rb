@@ -24,15 +24,42 @@ require 'common.rb'
 
 include Errno
 
-# Treat parameters as test names and run only those
-$only_these_tests = ARGV unless ARGV.empty?
+def logfile
+    IO.readlines 'logfile'
+end
 
-test("simple mount is successful") do
+def logfile_contains(expected_line)
+    logfile.any? {|line| line.strip == expected_line }
+end
+
+def flush_jobs
+    got_signal = false
+    Signal.trap("SIGUSR2") do
+        got_signal = true
+    end
+    
+    begin
+        Process.kill("SIGUSR2", $queuefs_daemon_pid)
+        while !got_signal
+            sleep 0.001
+        end
+    ensure
+        Signal.trap("SIGUSR2", "DEFAULT") 
+    end
+end
+
+
+test "simple mount is successful" do
     assert { File.basename(pwd) == TESTDIR_NAME }
 end
 
-test("source files are visible") do
+test "source files are visible" do
     touch('src/file')
-
     assert { File.exists?('mnt/file') }
+end
+
+test "writing a file makes a job" do
+    touch('mnt/file')
+    flush_jobs
+    assert { logfile_contains "src/file" }
 end

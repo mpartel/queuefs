@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <alloca.h>
 #include <pthread.h>
 
 struct JobQueue {
@@ -82,6 +83,7 @@ JobQueue* jobqueue_create(const char* cmd_template, int max_workers) {
 
     jq->child_pid = pid;
 
+    DPRINTF("Job queue created with cmd_template = `%s`", cmd_template);
     return jq;
 
 error:
@@ -113,6 +115,7 @@ void jobqueue_flush(JobQueue* jq)
 {
     pthread_mutex_lock(&jq->mutex);
 
+    DPRINT("Sending FLUSH command to job queue");
     send_command(jq, "FLUSH", strlen("FLUSH") + 1);
 
     char buf;

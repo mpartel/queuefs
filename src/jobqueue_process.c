@@ -32,6 +32,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <alloca.h>
 
 #include <glib.h>
 
@@ -179,6 +180,8 @@ static void handle_incoming_command(const char* buf) {
         unit->worker_pid = -1;
         g_queue_push_head(work_queue, unit);
     } else if (g_str_equal(buf, "FLUSH")) {
+        DPRINT("Handling FLUSH command");
+
         while (work_queue->length > 0 || active_workers > 0) {
             wait_for_all_workers_to_finish();
             // start_queued_work() is called by SIGCHLD handler automatically

@@ -38,7 +38,7 @@ int main() {
 #else
 #define ECHO "true"
 #endif
-    const char* cmd_template = "sleep 0.2 && " ECHO " && rm -f {} && touch {}";
+    const char* cmd_template = "sleep 0.1 && " ECHO " && rm -f {} && touch {}";
 
     JobQueue* jq = jobqueue_create(cmd_template, 2);
     if (!jq) {

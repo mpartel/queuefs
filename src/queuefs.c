@@ -42,6 +42,8 @@
 #include <assert.h>
 #include <pwd.h>
 #include <grp.h>
+#include <signal.h>
+#include <alloca.h>
 
 #include <fuse.h>
 #include <fuse_opt.h>
@@ -51,11 +53,19 @@
 #include "misc.h"
 
 /* SETTINGS */
-static struct settings {
-    const char *progname;
-    const char *mntsrc;
-    const char *mntdest;
+static struct Settings {
+    const char* progname;
+    const char* mntsrc;
+    const char* mntdest;
+
+    size_t mntsrc_pathlen;
+
+    char* cmd_template;
+    int max_workers;
+
     int mntsrc_fd;
+
+    JobQueue* jobqueue;
 } settings;
 
 /* PROTOTYPES */
@@ -112,6 +122,8 @@ static int queuefs_fsync(const char *path,
                          int isdatasync,
                          struct fuse_file_info *fi);
 
+static void handle_sigusr(int signum, siginfo_t* info, void* unused);
+
 static void print_usage(const char *progname);
 static void atexit_func();
 static int process_option(void *data,
@@ -135,16 +147,37 @@ static const char *process_path(const char *path) {
 static void *queuefs_init() {
     assert(settings.mntsrc_fd > 0);
 
+    DPRINTF("queuefs daemon pid is %d", (int)getpid());
+
     if (fchdir(settings.mntsrc_fd) != 0) {
         fprintf(stderr, "Could not change working directory to '%s': %s\n",
                 settings.mntsrc, strerror(errno));
         fuse_exit(fuse_get_context()->fuse);
     }
 
+    settings.jobqueue = jobqueue_create(settings.cmd_template, settings.max_workers);
+    if (!settings.jobqueue) {
+        fprintf(stderr, "Failed to create job queue.\n");
+        fuse_exit(fuse_get_context()->fuse);
+    }
+
+    struct sigaction sa;
+    sa.sa_sigaction = &handle_sigusr;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+
     return NULL;
 }
 
 static void queuefs_destroy(void *private_data) {
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sa.sa_flags = 0;
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+
+    jobqueue_destroy(settings.jobqueue);
 }
 
 static int queuefs_getattr(const char *path, struct stat *stbuf) {
@@ -393,8 +426,15 @@ static int queuefs_statfs(const char *path, struct statvfs *stbuf) {
 }
 
 static int queuefs_release(const char *path, struct fuse_file_info *fi) {
-    (void) path;
+    assert(path != NULL);
     close(fi->fh);
+
+    size_t mntsrc_pathlen = settings.mntsrc_pathlen;
+    size_t pathlen = strlen(path);
+    char* abs_path = alloca(mntsrc_pathlen + pathlen + 1);
+    strcpy(abs_path, settings.mntsrc);
+    strcpy(abs_path + mntsrc_pathlen, path);
+    jobqueue_add_file(settings.jobqueue, abs_path);
 
     return 0;
 }
@@ -417,6 +457,16 @@ static int queuefs_fsync(const char *path,
         return -errno;
 
     return 0;
+}
+
+static void handle_sigusr(int signum, siginfo_t* info, void* unused)
+{
+    (void)unused;
+
+    jobqueue_flush(settings.jobqueue);
+    if (signum == SIGUSR2) {
+        kill(info->si_pid, SIGUSR2);
+    }
 }
 
 static struct fuse_operations queuefs_oper = {
@@ -446,7 +496,8 @@ static struct fuse_operations queuefs_oper = {
     .write = queuefs_write,
     .statfs = queuefs_statfs,
     .release = queuefs_release,
-    .fsync = queuefs_fsync
+    .fsync = queuefs_fsync,
+    .flag_nullpath_ok = 0
 };
 
 static void print_usage(const char *progname) {
@@ -454,7 +505,11 @@ static void print_usage(const char *progname) {
         progname = "queuefs";
 
     printf("\n"
-        "Usage: %s [options] dir mountpoint\n"
+        "Usage: %s [options] dir mountpoint command\n"
+        "\n"
+        "The command is executed by /bin/sh with each occurrence of {}\n"
+        "replaced by the absolute path to the file that was written.\n"
+        "\n"
         "Information:\n"
         "  -h      --help            Print this and exit.\n"
         "  -V      --version         Print version number and exit.\n"
@@ -497,14 +552,23 @@ static int process_option(void *data,
     case OPTKEY_NONOPTION:
         if (!settings.mntsrc) {
             settings.mntsrc = arg;
-            return 0;
+            settings.mntsrc_pathlen = strlen(arg);
         } else if (!settings.mntdest) {
             settings.mntdest = arg;
-            return 1; /* leave this argument for fuse_main */
+        } else if (!settings.cmd_template) {
+            settings.cmd_template = strdup(arg);
         } else {
-            fprintf(stderr, "Too many arguments given\n");
-            return -1;
+            char* old = settings.cmd_template;
+            size_t old_len = strlen(old);
+            size_t arg_len = strlen(arg);
+            char* new = malloc(old_len + 1 + arg_len + 1);
+            strcpy(new, old);
+            new[old_len] = ' ';
+            strcpy(new + old_len + 1, arg);
+            free(old);
+            settings.cmd_template = new;
         }
+        return 0;
 
     default:
         return 1;
@@ -539,14 +603,18 @@ int main(int argc, char *argv[]) {
     settings.progname = argv[0];
     settings.mntsrc = NULL;
     settings.mntdest = NULL;
+    settings.mntsrc_pathlen = -1;
+    settings.cmd_template = NULL;
+    settings.max_workers = 100;
+    settings.jobqueue = NULL;
     atexit(&atexit_func);
 
     /* Parse options */
     if (fuse_opt_parse(&args, &od, options, &process_option) == -1)
         return 1;
 
-    /* Check that a source directory and a mount point was given */
-    if (!settings.mntsrc || !settings.mntdest) {
+    /* Check that required arguments were given */
+    if (!settings.mntsrc || !settings.mntdest || !settings.cmd_template) {
         print_usage(my_basename(argv[0]));
         return 1;
     }
@@ -562,6 +630,8 @@ int main(int argc, char *argv[]) {
     /* By default we don't mind if there are old jobs in queue. */
     fuse_opt_add_arg(&args, "-ononempty");
 
+    fuse_opt_add_arg(&args, settings.mntdest);
+
     /* Open mount source for chrooting in queuefs_init */
     settings.mntsrc_fd = open(settings.mntsrc, O_RDONLY);
     if (settings.mntsrc_fd == -1) {
@@ -576,6 +646,5 @@ int main(int argc, char *argv[]) {
 
     fuse_opt_free_args(&args);
     close(settings.mntsrc_fd);
-
     return fuse_main_return;
 }

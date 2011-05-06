@@ -18,7 +18,10 @@
 #   along with queuefs.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-require 'fileutils.rb'
+
+require 'rubygems'
+require 'escape'
+require 'fileutils'
 include FileUtils
 
 # Set the default umask for all tests
@@ -27,18 +30,22 @@ File.umask 0022
 EXECUTABLE_PATH = '../src/queuefs'
 TESTDIR_NAME = 'tmp_test_queuefs'
 
-# If set to an array of test names, only those will be run
-$only_these_tests = nil
+$queuefs_pid = nil
+$queuefs_daemon_pid = nil
 
 # Prepares a test environment with a mounted directory
 def test(testcase_title, options = {}, &block)
 
-    queuefs_args = options[:args] || ''
-
-    return unless $only_these_tests == nil or $only_these_tests.member? testcase_title
+    queuefs_opts = options[:options] || ''
+    cmd_template = options[:cmd] || 'echo {} >> ../logfile'
+    debug_output = options[:debug] || false
+    
+    if debug_output
+        cmd_template += " && echo \"JOB DONE: {}\""
+    end
 
     puts "--- #{testcase_title} ---"
-    puts "[  #{queuefs_args}  ]" unless queuefs_args.empty?
+    puts "[  #{queuefs_opts}  ]" unless queuefs_opts.empty?
 
     begin
         Dir.mkdir TESTDIR_NAME
@@ -50,6 +57,7 @@ def test(testcase_title, options = {}, &block)
 
     begin
         Dir.chdir TESTDIR_NAME
+        touch 'logfile'
         Dir.mkdir 'src'
         Dir.mkdir 'mnt'
     rescue Exception => ex
@@ -58,10 +66,22 @@ def test(testcase_title, options = {}, &block)
         exit! 1
     end
 
-    queuefs_pid = nil
+    $queuefs_pid = nil
+    $queuefs_daemon_pid = nil
     begin
-        cmd = "../#{EXECUTABLE_PATH} #{queuefs_args} src mnt"
-        queuefs_pid = Process.fork do
+        cmd = Escape.shell_command([
+            "../#{EXECUTABLE_PATH}",
+            queuefs_opts.split(/\s+/),
+            "-d",
+            "src",
+            "mnt",
+            cmd_template
+        ].flatten.reject(&:empty?)).to_s
+        $queuefs_pid = Process.fork do
+            unless debug_output
+                $stdout.close
+                $stderr.close
+            end
             exec cmd
             exit! 127
         end
@@ -73,18 +93,29 @@ def test(testcase_title, options = {}, &block)
         exit! 1
     end
 
-    # Wait for queuefs to daemonize itself
-    Process.wait queuefs_pid
-
-    # TODO: check that mounting was successful
-
+    # Wait for the mounting to complete
+    while process_exists($queuefs_pid) && !`mount`.include?(TESTDIR_NAME)
+        sleep 0.01
+    end
+    
     testcase_ok = true
+    
+    $queuefs_daemon_pid = child_pids_of($queuefs_pid)[0]
+    if $queuefs_daemon_pid.nil?
+        $stderr.puts "ERROR: failed to find daemon PID"
+        testcase_ok = false
+    end
+    
     begin
-        yield
+        yield if testcase_ok
     rescue Exception => ex
         $stderr.puts "ERROR: testcase `#{testcase_title}' failed"
+        $stderr.puts
         $stderr.puts ex
         $stderr.puts ex.backtrace
+        $stderr.puts
+        $stderr.puts "Logfile:"
+        $stderr.puts IO.read("logfile")
         testcase_ok = false
     end
 
@@ -98,6 +129,10 @@ def test(testcase_title, options = {}, &block)
         $stderr.puts ex.backtrace
         testcase_ok = false
     end
+    
+    Process.wait $queuefs_pid
+    
+    $queuefs_pid = nil
 
     begin
         Dir.chdir '..'
@@ -125,6 +160,23 @@ def umount_cmd
     then 'umount'
     else 'fusermount -uz'
     end
+end
+
+def process_exists(pid)
+    system("kill -s 0 #{pid}")
+end
+
+def child_pids_of(pid)
+    table = `ps -o pid= -o ppid=`
+    result = []
+    table.each_line do |line|
+        child, parent = line.strip.split(/\s+/).map &:to_i
+        if parent == pid
+            result << child
+        end
+    end
+    result.sort!
+    result
 end
 
 def assert
