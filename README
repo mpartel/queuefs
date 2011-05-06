@@ -20,14 +20,14 @@ Files are stored in the directory queuefs is mounted on.
 
 Dependencies:
 
-	* fuse 2.8.0 or above (http://fuse.sf.net/).
-	* glib 2.26.0 or above.
+* fuse 2.8.0 or above (http://fuse.sf.net/).
+ glib 2.26.0 or above.
 
 Compile and install as usual:
 
-	./configure
-	make
-	make install
+    ./configure
+    make
+    make install
 
 If you want the mounts made by non-root users to be visible to other users,
 you may have to add the line user_allow_other to /etc/fuse.conf.
@@ -37,6 +37,13 @@ you may have to add the line user_allow_other to /etc/fuse.conf.
 
 See the queuefs --help or the man-page for instructions and examples.
 
+## TODO ##
+
+* man page
+* --hide-all
+* --delete-on-start
+* --delete-on-finish
+* ...
 
 ## License ##
 
