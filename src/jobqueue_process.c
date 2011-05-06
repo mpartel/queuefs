@@ -73,7 +73,7 @@ static void wait_away_finished_workers();
 static bool wait_away_worker(bool nohang);
 static void start_queued_work();
 static void start_worker(WorkUnit* unit);
-static gchar** make_command(const char *file_path);
+static gchar* make_command(const char* file_path);
 
 static void free_work_unit(gpointer unit);
 
@@ -143,7 +143,7 @@ static void register_sigchld_handler() {
 static int process_input() {
     GByteArray* buf = g_byte_array_new();
 
-    DPRINT("Reading work unit from FUSE process");
+    DPRINT("Reading work unit from parent process");
     while (1) {
         if (take_from_readbuf(buf)) {
             // If we go here, we found the null byte that separates commands.
@@ -152,11 +152,11 @@ static int process_input() {
         }
         assert(readbuf_size == 0);
 
-        DPRINT("Buffering input from FUSE process");
+        DPRINT("Buffering input from parent process");
         ssize_t ret = read(input_fd, readbuf, readbuf_capacity);
-        DPRINTF("read() from FUSE process returned %d bytes", ret);
+        DPRINTF("read() from parent process returned %d bytes", ret);
         if (ret == -1 || ret == 0) { // error or eof
-            DPRINT("Pipe from FUSE process was closed");
+            DPRINT("Pipe from parent process was closed");
             readbuf_size = 0;
             return 0;
         } else {
@@ -249,16 +249,18 @@ static void start_queued_work() {
 static void start_worker(WorkUnit* unit) {
     DPRINTF("Starting worker for '%s'", unit->path);
 
-    gchar** cmd = make_command(unit->path);
+    const char* shell = "/bin/sh";
+    gchar* cmd = make_command(unit->path);
+    DPRINTF("Command: %s", cmd);
 
     pid_t pid = fork();
     if (pid == 0) {
         sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
-        execvp(cmd[0], (char* const*)cmd);
+        execlp(shell, shell, "-c", cmd, NULL);
         _exit(1);
     }
 
-    g_strfreev(cmd);
+    g_free(cmd);
 
     unit->worker_pid = pid;
 
@@ -266,26 +268,11 @@ static void start_worker(WorkUnit* unit) {
     active_workers++;
 }
 
-static gchar** make_command(const char *file_path) {
-    // TODO: change cmd_template to be a single string
-    // and always invoke /bin/sh -c cmd_template_with_quoted_path
+static gchar* make_command(const char* file_path) {
     char* quoted_path = g_shell_quote(file_path);
-    const char* const* cmd_template = settings->cmd_template;
-    const int num_parts = g_strv_length((gchar**)cmd_template);
-    gchar** cmd = g_malloc_n(num_parts + 1, sizeof(gchar*));
-    cmd[num_parts] = NULL;
-
-    for (int i = 0; cmd_template[i] != NULL; ++i) {
-        if (strstr(cmd_template[i], "{}")) {
-            gchar** parts = g_strsplit(cmd_template[i], "{}", 0);
-            cmd[i] = g_strjoinv(quoted_path, parts);
-            g_strfreev(parts);
-        } else {
-            cmd[i] = g_strdup(cmd_template[i]);
-        }
-        DPRINTF("argv[%d] = \"%s\"", i, cmd[i]);
-    }
-
+    gchar** parts = g_strsplit(settings->cmd_template, "{}", 0);
+    gchar* cmd = g_strjoinv(quoted_path, parts);
+    g_strfreev(parts);
     g_free(quoted_path);
     return cmd;
 }

@@ -43,7 +43,7 @@ struct JobQueue {
 static void send_command(JobQueue* jq, const char* cmd, size_t len);
 
 
-JobQueue* jobqueue_create(const char** cmd_template, int max_workers) {
+JobQueue* jobqueue_create(const char* cmd_template, int max_workers) {
     JobQueue* jq = NULL;
 
     int input_pipe[2] = {-1, -1};

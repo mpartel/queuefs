@@ -24,10 +24,10 @@ struct JobQueue;
 typedef struct JobQueue JobQueue;
 
 /*
- * cmd_template must be a NULL-terminated array where elements equal to "{}"
- * will be replaced with the file name.
+ * cmd_template must be a NULL-terminated array where the substring "{}"
+ * will be replaced with the shell-quoted file name.
  */
-JobQueue* jobqueue_create(const char** cmd_template, int max_workers);
+JobQueue* jobqueue_create(const char* cmd_template, int max_workers);
 
 /*
  * Adds a file to be processed in the background when a worker becomes available.
