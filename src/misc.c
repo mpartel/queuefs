@@ -26,9 +26,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/time.h>
 
-const char *my_basename(const char* path)
-{
+const char *my_basename(const char* path) {
     const char* p;
 
     if (path == NULL)
@@ -41,3 +43,26 @@ const char *my_basename(const char* path)
         return path;
 }
 
+int wait_status_to_code(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        return -WSTOPSIG(status);
+    } else {
+        DPRINT("Warning: wait_status_to_code code called with invalid status");
+        return -1;
+    }
+}
+
+void timeval_add_ms(struct timeval* tv, int ms) {
+    tv->tv_sec += ms / 1000;
+    tv->tv_usec += (ms % 1000) * 1000;
+}
+
+long ms_to_timeval(struct timeval* tv) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long d = (tv->tv_sec - now.tv_sec) * 1000;
+    d += (tv->tv_usec - now.tv_usec) / 1000;
+    return d;
+}

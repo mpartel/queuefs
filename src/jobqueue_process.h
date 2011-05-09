@@ -24,10 +24,7 @@
 #ifndef INC_QUEUEFS_JOBQUEUE_PROCESS_H
 #define INC_QUEUEFS_JOBQUEUE_PROCESS_H
 
-typedef struct JobQueueSettings {
-    const char* cmd_template;
-    int max_workers;
-} JobQueueSettings;
+#include "jobqueue.h"
 
 void jobqueue_process_main(JobQueueSettings* settings, int input_fd, int output_fd);
 

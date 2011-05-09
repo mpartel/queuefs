@@ -39,7 +39,7 @@ $queuefs_daemon_pid = nil
 def test(testcase_title, options = {}, &block)
 
     queuefs_opts = options[:options] || ''
-    cmd_template = options[:cmd] || 'echo {} >> ../logfile'
+    cmd_template = options[:cmd] || 'echo {} >> logfile'
     debug_output = options[:debug] || false
     
     if debug_output
@@ -47,7 +47,6 @@ def test(testcase_title, options = {}, &block)
     end
 
     puts "--- #{testcase_title} ---"
-    puts "[  #{queuefs_opts}  ]" unless queuefs_opts.empty?
 
     begin
         Dir.mkdir TESTDIR_NAME
@@ -75,6 +74,7 @@ def test(testcase_title, options = {}, &block)
             "../#{EXECUTABLE_PATH}",
             queuefs_opts.split(/\s+/),
             "-d",
+            "-s",
             "src",
             "mnt",
             cmd_template

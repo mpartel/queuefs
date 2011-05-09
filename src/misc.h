@@ -31,4 +31,15 @@
    Returns NULL if path is NULL. */
 const char *my_basename(const char* path);
 
+/* Takes a status written by waitpid() and returns
+ * 0 if the process was successful or its exit code
+ * or -N if it was killed by signal N.
+ */
+int wait_status_to_code(int status);
+
+struct timeval;
+void timeval_add_ms(struct timeval* tv, int ms);
+
+long ms_to_timeval(struct timeval* tv);
+
 #endif

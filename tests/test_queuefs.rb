@@ -34,6 +34,7 @@ def logfile_contains(expected_line)
 end
 
 def flush_jobs
+    system('sync')
     got_signal = false
     Signal.trap("SIGUSR2") do
         got_signal = true
@@ -62,5 +63,15 @@ end
 test "writing a file makes a job" do
     touch('mnt/file')
     flush_jobs
-    assert { logfile_contains "src/file" }
+    assert { logfile_contains 'src/file' }
+end
+
+# FIXME: -r 300 should not be necessary
+test "retry failed job", :options => '-r 300', :cmd => 'test -f {}2 && echo {} >> logfile' do
+    touch('mnt/file')
+    flush_jobs
+    assert { !logfile_contains 'src/file' }
+    touch('src/file2')
+    flush_jobs
+    assert { logfile_contains 'src/file' }
 end

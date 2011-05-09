@@ -48,7 +48,7 @@ struct JobQueue {
 static void send_command(JobQueue* jq, const char* cmd, size_t len);
 
 
-JobQueue* jobqueue_create(const char* cmd_template, int max_workers) {
+JobQueue* jobqueue_create(const JobQueueSettings* settings) {
     JobQueue* jq = NULL;
 
     int input_pipe[2] = {-1, -1};
@@ -64,8 +64,11 @@ JobQueue* jobqueue_create(const char* cmd_template, int max_workers) {
     if (!jq) {
         goto error;
     }
-    jq->settings.cmd_template = cmd_template;
-    jq->settings.max_workers = max_workers;
+    jq->settings = *settings;
+    jq->settings.cmd_template = strdup(jq->settings.cmd_template);
+    if (!jq->settings.cmd_template) {
+        goto error;
+    }
     pthread_mutex_init(&jq->mutex, NULL);
     jq->child_input_fd = input_pipe[1];
     jq->child_output_fd = output_pipe[0];
@@ -87,7 +90,7 @@ JobQueue* jobqueue_create(const char* cmd_template, int max_workers) {
 
     jq->child_pid = pid;
 
-    DPRINTF("Job queue created with cmd_template = `%s`", cmd_template);
+    DPRINTF("Job queue created with cmd_template = `%s`", jq->settings.cmd_template);
     return jq;
 
 error:
@@ -97,6 +100,7 @@ error:
     close(output_pipe[1]);
     if (jq) {
         pthread_mutex_destroy(&jq->mutex);
+        free((char*)jq->settings.cmd_template);
     }
     free(jq);
     return NULL;
@@ -155,6 +159,7 @@ int jobqueue_destroy(JobQueue* jq) {
     }
 
     pthread_mutex_destroy(&jq->mutex);
+    free((char*)jq->settings.cmd_template);
     free(jq);
     return ret;
 }

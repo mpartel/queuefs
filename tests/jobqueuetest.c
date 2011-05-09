@@ -32,25 +32,39 @@
 #include "jobqueue.c"
 #include "jobqueue_process.c"
 
+static struct stat global_stat_struct;
+
 #define TESTFILE(name) "/tmp/queuefs_test_file_" name
 
 #define CHECK(prop) if (!(prop)) { fprintf(stderr, "Failure: '%s'\n", #prop); exit(1); }
 
-int main() {
+#define CHECK_FILE_EXISTS(name) CHECK(stat(name, &global_stat_struct) == 0)
+#define CHECK_FILE_NOT_EXISTS(name) CHECK(stat(name, &global_stat_struct) != 0 && errno == ENOENT)
+
 #if !QUEUEFS_DISABLE_DEBUG
 #define ECHO "echo {}"
 #else
 #define ECHO "true"
 #endif
-    const char* cmd_template = "sleep 0.1 && " ECHO " && rm -f {} && touch {}";
 
-    JobQueue* jq = jobqueue_create(cmd_template, 2);
-    if (!jq) {
-        fprintf(stderr, "Failed to create job queue\n");
-        return 1;
+static void checked_jobqueue_destroy(JobQueue* jq) {
+    int destroy_status = jobqueue_destroy(jq);
+    if (destroy_status) {
+        fprintf(stderr, "jobqueue_destroy returned %d\n", destroy_status);
+        exit(1);
     }
+}
 
-    struct stat st;
+static void simple() {
+    JobQueueSettings jqs;
+    jqs.cmd_template = "sleep 0.1 && " ECHO " && rm -f {} && touch {}";
+    jqs.max_workers = 2;
+    jqs.retry_wait_ms = 1;
+
+    JobQueue* jq = jobqueue_create(&jqs);
+    CHECK(jq);
+
+    
 
     jobqueue_flush(jq);
 
@@ -60,7 +74,7 @@ int main() {
 
     jobqueue_flush(jq);
 
-#define CHECK_EXISTS(name) CHECK(stat(TESTFILE(name), &st) == 0)
+#define CHECK_EXISTS(name) CHECK_FILE_EXISTS(TESTFILE(name))
     CHECK_EXISTS("1")
     CHECK_EXISTS("2")
     CHECK_EXISTS("3")
@@ -77,6 +91,7 @@ int main() {
     CHECK_EXISTS("5")
     CHECK_EXISTS("6")
     CHECK_EXISTS("with spaces in name")
+#undef CHECK_EXISTS
 
     for (int i = 1; i <= 6; ++i) {
         char buf[1000];
@@ -85,11 +100,35 @@ int main() {
     }
     unlink(TESTFILE("with spaces in name"));
 
-    int destroy_status = jobqueue_destroy(jq);
-    if (destroy_status) {
-        fprintf(stderr, "jobqueue_destroy returned %d\n", destroy_status);
-        return 2;
-    }
+    checked_jobqueue_destroy(jq);
+}
 
-    return 0;
+static void rerunning() {
+    JobQueueSettings jqs;
+    jqs.cmd_template = "test -f {} && rm -f {}";
+    jqs.max_workers = 2;
+    jqs.retry_wait_ms = 1;
+
+    JobQueue* jq = jobqueue_create(&jqs);
+    CHECK(jq);
+
+    const char* filename = TESTFILE("xoo");
+    unlink(filename);
+
+    jobqueue_add_file(jq, filename);
+    jobqueue_flush(jq);
+
+    FILE* f = fopen(filename, "wb");
+    CHECK(f);
+    fclose(f);
+
+    jobqueue_flush(jq);
+    CHECK_FILE_NOT_EXISTS(filename);
+
+    checked_jobqueue_destroy(jq);
+}
+
+int main() {
+    simple();
+    rerunning();
 }

@@ -35,6 +35,7 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 #include <signal.h>
 #include <alloca.h>
 
@@ -44,6 +45,10 @@
 typedef struct WorkUnit {
     char* path;
     pid_t worker_pid;
+
+    int attempts;
+    int last_exit_code;
+    struct timeval next_execution_time;
 } WorkUnit;
 
 static const JobQueueSettings* settings;
@@ -56,9 +61,11 @@ static char* readbuf;
 
 // The following may only be accessed while SIGCHLD is blocked
 // since it is also accessed in the SIGCHLD handler.
+static long long workers_started_ever;
+static long long workers_waited_ever;
 static int active_workers;
 static GHashTable* active_work_units; // of pid to WorkUnit*
-static GQueue* work_queue;            // of WorkUnit*
+static GTree* work_queue;             // of WorkUnit*
 
 static sigset_t sigchld_set;
 
@@ -72,15 +79,16 @@ static int process_input();
 static void handle_incoming_command(const char* buf);
 static int take_from_readbuf(GByteArray* buf); // returns 1 if encountered '\0'
 
-static void wait_for_all_workers_to_finish();
-
 static void wait_away_finished_workers();
 static bool wait_away_worker(bool nohang);
-static void start_queued_work();
+static void start_queued_work(bool nodelay);
 static void start_worker(WorkUnit* unit);
 static gchar* make_command(const char* file_path);
 
 static void free_work_unit(gpointer unit);
+static gint compare_work_unit(gconstpointer a, gconstpointer b, gpointer data);
+static gboolean traverse_get_first_key(gpointer key, gpointer value, gpointer dest);
+static bool wait_for_sigchld(long ms_to_wait);
 
 
 void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int output_fd_) {
@@ -92,13 +100,18 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int outpu
     readbuf_size = 0;
     readbuf = alloca(readbuf_capacity);
 
+    workers_started_ever = 0;
+    workers_waited_ever = 0;
     active_workers = 0;
     active_work_units = g_hash_table_new_full(&g_direct_hash,
                                               &g_direct_equal,
                                               NULL,
                                               &free_work_unit);
 
-    work_queue = g_queue_new();
+    work_queue = g_tree_new_full(&compare_work_unit,
+                                 NULL,
+                                 NULL,
+                                 &free_work_unit);
 
     sigemptyset(&sigchld_set);
     sigaddset(&sigchld_set, SIGCHLD);
@@ -112,9 +125,9 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int outpu
 
         sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
 
-        if (work_queue->length > 0) {
+        if (g_tree_nnodes(work_queue) > 0) {
             if (active_workers < settings->max_workers) {
-                start_queued_work();
+                start_queued_work(true);
             } else {
                 DPRINT("No more worker slots - work is left queued");
             }
@@ -127,7 +140,7 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int outpu
     sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
 
     DPRINT("Job queue process cleaning up");
-    g_queue_free(work_queue);
+    g_tree_destroy(work_queue);
     g_hash_table_destroy(active_work_units);
     close(input_fd);
 }
@@ -135,7 +148,7 @@ void jobqueue_process_main(JobQueueSettings* settings_, int input_fd_, int outpu
 static void handle_sigchld(int signum) {
     (void)signum;
     wait_away_finished_workers();
-    start_queued_work();
+    start_queued_work(true);
 }
 
 static void register_sigchld_handler() {
@@ -178,16 +191,30 @@ static int process_input() {
 static void handle_incoming_command(const char* buf) {
     DPRINTF("Received command: '%s'", buf);
 
+    sigset_t oldmask;
+    sigprocmask(SIG_BLOCK, &sigchld_set, &oldmask);
+    
     if (g_str_has_prefix(buf, "EXEC ")) {
         WorkUnit* unit = g_malloc(sizeof(WorkUnit));
         unit->path = g_strdup(buf + strlen("EXEC "));
         unit->worker_pid = -1;
-        g_queue_push_head(work_queue, unit);
+        gettimeofday(&unit->next_execution_time, NULL);
+        unit->attempts = 0;
+        unit->last_exit_code = -1;
+        g_tree_insert(work_queue, unit, unit);
     } else if (g_str_equal(buf, "FLUSH")) {
         DPRINT("Handling FLUSH command");
-
-        while (work_queue->length > 0 || active_workers > 0) {
-            wait_for_all_workers_to_finish();
+        
+        long long terminations_expected = workers_started_ever + g_tree_nnodes(work_queue);
+        while (workers_waited_ever < terminations_expected) {
+            if (active_workers == 0) {
+                start_queued_work(false);
+            }
+            DPRINTF("QUEUED: %d   ACTIVE: %d   EVER:  %lld / %lld",
+                    g_tree_nnodes(work_queue), active_workers,
+                    workers_waited_ever, workers_started_ever);
+            DPRINT("Waiting for SIGCHLD");
+            sigsuspend(&oldmask);
             // start_queued_work() is called by SIGCHLD handler automatically
         }
 
@@ -197,6 +224,8 @@ static void handle_incoming_command(const char* buf) {
             }
         }
     }
+    
+    sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
 }
 
 static int take_from_readbuf(GByteArray* buf) {
@@ -217,14 +246,6 @@ static int take_from_readbuf(GByteArray* buf) {
     return false;
 }
 
-static void wait_for_all_workers_to_finish() {
-    sigprocmask(SIG_BLOCK, &sigchld_set, NULL);
-    while (active_workers > 0) {
-        wait_away_worker(false);
-    }
-    sigprocmask(SIG_UNBLOCK, &sigchld_set, NULL);
-}
-
 static void wait_away_finished_workers() {
     int ret;
     do {
@@ -238,17 +259,44 @@ static bool wait_away_worker(bool nohang) {
     bool ret = false;
     pid_t pid = waitpid(-1, &status, nohang ? WNOHANG : 0);
     if (pid > 0) {
-        g_hash_table_remove(active_work_units, GINT_TO_POINTER(pid));
+        gpointer key = GINT_TO_POINTER(pid);
+        WorkUnit* unit = g_hash_table_lookup(active_work_units, key);
+        g_hash_table_steal(active_work_units, key);
         active_workers--;
+        workers_waited_ever++;
+
+        int code = wait_status_to_code(status);
+        if (code == 0) {
+            DPRINTF("Work unit finished successfully: %s", unit->path);
+            // Could move or delete the file or something
+            free_work_unit(unit);
+        } else {
+            DPRINTF("Work unit failed: %s (%d)", unit->path, code);
+            unit->attempts++;
+            unit->last_exit_code = code;
+            gettimeofday(&unit->next_execution_time, NULL);
+            timeval_add_ms(&unit->next_execution_time, settings->retry_wait_ms);
+            g_tree_insert(work_queue, unit, unit);
+        }
+
         ret = true;
     }
 
     return ret;
 }
 
-static void start_queued_work() {
-    if (work_queue->length > 0) {
-        WorkUnit* unit = g_queue_pop_tail(work_queue);
+static void start_queued_work(bool wait) {
+    WorkUnit* unit = NULL;
+    g_tree_foreach(work_queue, &traverse_get_first_key, &unit);
+    if (unit) {
+        bool can_execute = true;
+        if (wait) {
+            long ms_to_wait = ms_to_timeval(&unit->next_execution_time);
+            if (ms_to_wait > 0) {
+                can_execute = !wait_for_sigchld(ms_to_wait);
+            }
+        }
+        g_tree_steal(work_queue, unit);
         start_worker(unit);
     }
 }
@@ -273,6 +321,7 @@ static void start_worker(WorkUnit* unit) {
 
     g_hash_table_insert(active_work_units, GINT_TO_POINTER(pid), unit);
     active_workers++;
+    workers_started_ever++;
 }
 
 static gchar* make_command(const char* file_path) {
@@ -287,4 +336,38 @@ static gchar* make_command(const char* file_path) {
 static void free_work_unit(gpointer unit) {
     g_free(((WorkUnit*)unit)->path);
     g_free(unit);
+}
+
+static gint compare_work_unit(gconstpointer a, gconstpointer b, gpointer data) {
+    WorkUnit* wu1 = (WorkUnit*)a;
+    WorkUnit* wu2 = (WorkUnit*)b;
+    struct timeval* tv1 = &wu1->next_execution_time;
+    struct timeval* tv2 = &wu2->next_execution_time;
+    if (tv1->tv_sec == tv2->tv_sec) {
+        if (tv1->tv_usec == tv2->tv_usec) {
+            return wu1->worker_pid - wu2->worker_pid;
+        } else {
+            return tv1->tv_usec - tv2->tv_usec;
+        }
+    } else {
+        return tv1->tv_sec - tv2->tv_sec;
+    }
+}
+
+static gboolean traverse_get_first_key(gpointer key, gpointer value, gpointer dest) {
+    *(gpointer*)dest = key;
+    return TRUE;
+}
+
+static bool wait_for_sigchld(long ms_to_wait) {
+    //FIXIME: this is no good - we can't accept new jobs while waiting
+    struct timespec ts;
+    ts.tv_sec = ms_to_wait / 1000;
+    ts.tv_nsec = (ms_to_wait % 1000) * 1000000;
+    DPRINTF("Waiting for %ld ms or SIGCHLD", ms_to_wait);
+    if (sigtimedwait(&sigchld_set, NULL, &ts) == -1) {
+        return true;
+    } else {
+        return false;
+    }
 }

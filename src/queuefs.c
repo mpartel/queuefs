@@ -66,6 +66,7 @@ static struct Settings {
 
     char* cmd_template;
     int max_workers;
+    long retry_wait_ms;
 
     int mntsrc_fd;
 
@@ -153,15 +154,19 @@ static void *queuefs_init() {
 
     DPRINTF("queuefs daemon pid is %d", (int)getpid());
 
+    JobQueueSettings jqs;
+    jqs.cmd_template = settings.cmd_template;
+    jqs.max_workers = settings.max_workers;
+    jqs.retry_wait_ms = settings.retry_wait_ms;
+    settings.jobqueue = jobqueue_create(&jqs);
+    if (!settings.jobqueue) {
+        fprintf(stderr, "Failed to create job queue.\n");
+        fuse_exit(fuse_get_context()->fuse);
+    }
+    
     if (fchdir(settings.mntsrc_fd) != 0) {
         fprintf(stderr, "Could not change working directory to '%s': %s\n",
                 settings.mntsrc, strerror(errno));
-        fuse_exit(fuse_get_context()->fuse);
-    }
-
-    settings.jobqueue = jobqueue_create(settings.cmd_template, settings.max_workers);
-    if (!settings.jobqueue) {
-        fprintf(stderr, "Failed to create job queue.\n");
         fuse_exit(fuse_get_context()->fuse);
     }
 
@@ -519,7 +524,9 @@ static void print_usage(const char *progname) {
         "  -V      --version         Print version number and exit.\n"
         "\n"
         "Options:\n"
-        "  (none yet)\n"
+        "  -r n    --retry-delay=n   Milliseconds to wait before retrying\n"
+        "                            a failed job. Default: 30000\n"
+        "  (TODO)\n"
         "\n"
         "FUSE options:\n"
         "  -o opt[,opt,...]          Mount options.\n"
@@ -583,9 +590,13 @@ int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
     /* Fuse's option parser will store things here. */
-    static struct OptionData {
+    struct OptionData {
         int no_allow_other;
-    } od = { 0 };
+        long retry_delay;
+    } od = {
+        .no_allow_other = 0,
+        .retry_delay = 30 * 1000
+    };
 
 #define OPT2(one, two, key) \
             FUSE_OPT_KEY(one, key), \
@@ -600,6 +611,7 @@ int main(int argc, char *argv[]) {
     static const struct fuse_opt options[] = {
         OPT2("-h", "--help", OPTKEY_HELP),
         OPT2("-V", "--version", OPTKEY_VERSION),
+        OPT_OFFSET3("-r %ld", "--retry-delay=%ld", "retry-delay=%ld", retry_delay, -1),
         FUSE_OPT_END
     };
 
@@ -613,9 +625,10 @@ int main(int argc, char *argv[]) {
     settings.jobqueue = NULL;
     atexit(&atexit_func);
 
-    /* Parse options */
     if (fuse_opt_parse(&args, &od, options, &process_option) == -1)
         return 1;
+
+    settings.retry_wait_ms = od.retry_delay;
 
     /* Check that required arguments were given */
     if (!settings.mntsrc || !settings.mntdest || !settings.cmd_template) {
